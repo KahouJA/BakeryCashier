@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <link rel="manifest" href="manifest.json">
+  <style>
+    :root {
+      --bg: #0e0e0e;
+      --card: #1a1a1a;
+      --text: #f2f2f2;
+      --muted: #8a8a8a;
+      --accent: #4f9cff;
+      --danger: #ff6b6b;
+      --ok: #4fd18b;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0; height: 100%;
+      background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    .wrap {
+      max-width: 420px; margin: 0 auto;
+      padding: 24px 20px calc(24px + env(safe-area-inset-bottom));
+      min-height: 100%;
+      display: flex; flex-direction: column; gap: 20px;
+    }
+    h1 { font-size: 18px; font-weight: 600; margin: 8px 0 0; }
+    .status {
+      font-size: 13px; color: var(--muted);
+      display: flex; align-items: center; gap: 6px;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .dot.online { background: var(--ok); }
+    .dot.offline { background: var(--danger); }
+    .card {
+      background: var(--card); border-radius: 16px; padding: 20px;
+      display: flex; flex-direction: column; gap: 14px;
+    }
+    label { font-size: 13px; color: var(--muted); }
+    .amount-row { display: flex; align-items: center; gap: 6px; }
+    .amount-row span { font-size: 28px; color: var(--muted); }
+    input[type="text"], input[inputmode="decimal"] {
+      background: #111; border: 1px solid #2c2c2c; border-radius: 10px;
+      color: var(--text); padding: 12px 14px; font-size: 17px; width: 100%;
+    }
+    input#amount { font-size: 28px; flex: 1; }
+    button {
+      background: var(--accent); color: #fff; border: none;
+      border-radius: 12px; padding: 15px; font-size: 16px; font-weight: 600;
+      width: 100%;
+    }
+    button:active { opacity: 0.85; }
+    button:disabled { background: #333; color: #777; }
+    .pending {
+      font-size: 13px; color: var(--muted); text-align: center;
+    }
+    .recent { display: flex; flex-direction: column; gap: 8px; }
+    .recent h2 { font-size: 13px; color: var(--muted); font-weight: 500; margin: 0; }
+    .entry {
+      display: flex; justify-content: space-between; align-items: center;
+      background: var(--card); border-radius: 10px; padding: 10px 14px;
+      font-size: 14px;
+    }
+    .entry .amt { font-weight: 600; }
+    .entry .note { color: var(--muted); margin-left: 8px; }
+    .entry .badge {
+      font-size: 11px; padding: 2px 7px; border-radius: 20px;
+    }
+    .badge.synced { color: var(--ok); background: rgba(79,209,139,0.12); }
+    .badge.queued { color: var(--danger); background: rgba(255,107,107,0.12); }
+    .toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: var(--ok); color: #06210f; padding: 10px 18px;
+      border-radius: 20px; font-size: 14px; font-weight: 600;
+      opacity: 0; transition: opacity 0.25s; pointer-events: none;
+    }
+    .toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div>
+      <h1>Spend Log</h1>
+      <div class="status">
+        <span class="dot" id="statusDot"></span>
+        <span id="statusText">checking connection…</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div>
+        <label for="amount">Amount</label>
+        <div class="amount-row">
+          <span>£</span>
+          <input id="amount" type="text" inputmode="decimal" placeholder="0.00" autocomplete="off">
+        </div>
+      </div>
+      <div>
+        <label for="note">Note</label>
+        <input id="note" type="text" placeholder="what was it for?" autocomplete="off">
+      </div>
+      <button id="submitBtn">Log it</button>
+      <div class="pending" id="pendingText"></div>
+    </div>
+
+    <div class="recent">
+      <h2>Recent</h2>
+      <div id="recentList"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast">Logged</div>
+
+  <script>
+    // Paste your Apps Script Web App URL here (ends in /exec).
+    const SCRIPT_URL = 'PASTE_YOUR_APPS_SCRIPT_URL_HERE';
+
+    const QUEUE_KEY = 'spendlog_queue_v1';
+    const amountEl = document.getElementById('amount');
+    const noteEl = document.getElementById('note');
+    const submitBtn = document.getElementById('submitBtn');
+    const pendingText = document.getElementById('pendingText');
+    const recentList = document.getElementById('recentList');
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const toast = document.getElementById('toast');
+
+    function loadQueue() {
+      try { return JSON.parse(localStorage.getItem(QUEUE_KEY)) || []; }
+      catch (e) { return []; }
+    }
+    function saveQueue(q) {
+      localStorage.setItem(QUEUE_KEY, JSON.stringify(q));
+    }
+
+    function showToast(msg) {
+      toast.textContent = msg;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 1200);
+    }
+
+    function updateStatus() {
+      const online = navigator.onLine;
+      statusDot.className = 'dot ' + (online ? 'online' : 'offline');
+      statusText.textContent = online ? 'online' : 'offline — entries will queue';
+    }
+
+    function render() {
+      const queue = loadQueue();
+      const pendingCount = queue.filter(e => !e.synced).length;
+      pendingText.textContent = pendingCount > 0
+        ? pendingCount + ' waiting to sync'
+        : '';
+
+      recentList.innerHTML = '';
+      queue.slice(-8).reverse().forEach(entry => {
+        const row = document.createElement('div');
+        row.className = 'entry';
+        const d = new Date(entry.timestamp);
+        const time = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+        row.innerHTML =
+          '<div><span class="amt">£' + Number(entry.amount).toFixed(2) + '</span>' +
+          (entry.note ? '<span class="note">' + escapeHtml(entry.note) + '</span>' : '') +
+          '</div>' +
+          '<span class="badge ' + (entry.synced ? 'synced' : 'queued') + '">' +
+          (entry.synced ? time : 'queued') + '</span>';
+        recentList.appendChild(row);
+      });
+    }
+
+    function escapeHtml(s) {
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    function addEntry(amount, note) {
+      const queue = loadQueue();
+      queue.push({
+        id: Date.now() + '-' + Math.random().toString(36).slice(2),
+        amount: amount,
+        note: note,
+        timestamp: Date.now(),
+        synced: false
+      });
+      saveQueue(queue);
+      render();
+      trySync();
+    }
+
+    function trySync() {
+      if (!navigator.onLine) return;
+      const queue = loadQueue();
+      const unsynced = queue.filter(e => !e.synced);
+      if (unsynced.length === 0) return;
+
+      unsynced.forEach(entry => {
+        fetch(SCRIPT_URL, {
+          method: 'POST',
+          mode: 'no-cors', // avoids CORS preflight; response is opaque
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            amount: entry.amount,
+            note: entry.note,
+            timestamp: entry.timestamp
+          })
+        }).then(() => {
+          // no-cors gives an opaque response, so we can't confirm
+          // success from the response itself — mark synced optimistically.
+          const q = loadQueue();
+          const match = q.find(e => e.id === entry.id);
+          if (match) match.synced = true;
+          saveQueue(q);
+          render();
+        }).catch(() => {
+          // stays queued, will retry on next online event / page load
+        });
+      });
+    }
+
+    submitBtn.addEventListener('click', () => {
+      const amount = parseFloat(amountEl.value);
+      if (!amount || amount <= 0) {
+        amountEl.focus();
+        return;
+      }
+      addEntry(amount, noteEl.value.trim());
+      amountEl.value = '';
+      noteEl.value = '';
+      showToast('Logged');
+      amountEl.focus();
+    });
+
+    window.addEventListener('online', () => { updateStatus(); trySync(); });
+    window.addEventListener('offline', updateStatus);
+
+    // Register service worker so the page shell loads even offline
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    }
+
+    updateStatus();
+    render();
+    trySync();
+  </script>
+</body>
+</html>
