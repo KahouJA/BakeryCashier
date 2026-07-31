@@ -102,10 +102,15 @@
           <option value="">Select institution first</option>
         </select>
       </div>
+      <div id="currencyWrap" style="display:none;">
+        <label for="currency">Currency</label>
+        <select id="currency" style="width:100%;background:#111;border:1px solid #2c2c2c;border-radius:10px;color:#f2f2f2;padding:12px 14px;font-size:15px;">
+        </select>
+      </div>
       <div>
         <label for="amount">Amount</label>
         <div class="amount-row">
-          <span>£</span>
+          <span id="currencySymbol">£</span>
           <input id="amount" type="text" inputmode="decimal" placeholder="0.00" autocomplete="off">
         </div>
       </div>
@@ -129,23 +134,38 @@
     // Paste your Apps Script Web App URL here (ends in /exec).
     const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzt0L1DyXvqJW8DZvLVzqr1fnx8vnIuIBD-M90F7QGjMUFL4pTZuH1_XScg3EOvOMud/exec';
 
-    // Institution -> list of account labels shown in the dropdown.
-    // No real account numbers live here — this is just labels for
-    // the UI. The actual masked number lookup happens server-side
-    // in Apps Script, so it's never exposed in this public page.
+    // Institution -> account -> list of currencies that account can spend in.
+    // One currency = auto-filled silently. More than one = you'll get a
+    // Currency dropdown at entry time, since it can't be guessed reliably.
     //
-    // TO ADD A NEW ACCOUNT LATER: just add a new key (institution name)
-    // or push a new string into an existing institution's array below.
-    // Then add the matching entry in Code.gs's ACCOUNT_NUMBERS table
-    // (see the comment there) so the masked number can be looked up.
+    // TO ADD A NEW ACCOUNT LATER: add/edit an entry below, then add the
+    // matching institution/account to Code.gs's ACCOUNT_NUMBERS table.
+    // Adjust the currency lists here to match what each card can actually do.
     const ACCOUNTS = {
-      'Lloyds': ['Current Account'],
-      'BOC Macau': ['UnionPay Diamond Wealth', 'Visa Wealth']
+      'Lloyds': {
+        'Current Account': ['GBP']
+      },
+      'BOC Macau': {
+        'UnionPay Diamond Wealth': ['MOP', 'HKD', 'CNY', 'USD'],
+        'Visa Wealth': ['MOP', 'HKD', 'USD']
+      }
     };
 
     const institutionEl = document.getElementById('institution');
     const accountEl = document.getElementById('account');
+    const currencyEl = document.getElementById('currency');
+    const currencyWrap = document.getElementById('currencyWrap');
+    const currencySymbolEl = document.getElementById('currencySymbol');
     const LAST_USED_KEY = 'spendlog_last_used_v1';
+
+    // Only these get their own symbol; everything else (MOP, HKD, etc.) shows $.
+    const CURRENCY_SYMBOLS = { GBP: '£', EUR: '€', CNY: '¥' };
+    function symbolFor(currency) {
+      return CURRENCY_SYMBOLS[currency] || '$';
+    }
+    function updateAmountSymbol() {
+      currencySymbolEl.textContent = symbolFor(currencyEl.value);
+    }
 
     Object.keys(ACCOUNTS).forEach(inst => {
       const opt = document.createElement('option');
@@ -154,40 +174,76 @@
       institutionEl.appendChild(opt);
     });
 
-    function populateAccounts(institution, preselectAccount) {
-      const chosen = ACCOUNTS[institution] || [];
-      if (chosen.length === 0) {
+    function populateAccounts(institution, preselectAccount, preselectCurrency) {
+      const accounts = ACCOUNTS[institution] || {};
+      const accountNames = Object.keys(accounts);
+      if (accountNames.length === 0) {
         accountEl.innerHTML = '<option value="">Select institution first</option>';
         accountEl.disabled = true;
+        currencyWrap.style.display = 'none';
         return;
       }
       accountEl.disabled = false;
       accountEl.innerHTML = '<option value="">Select account</option>' +
-        chosen.map(a => '<option value="' + a + '">' + a + '</option>').join('');
-      if (preselectAccount && chosen.includes(preselectAccount)) {
+        accountNames.map(a => '<option value="' + a + '">' + a + '</option>').join('');
+      if (preselectAccount && accountNames.includes(preselectAccount)) {
         accountEl.value = preselectAccount;
+        populateCurrency(institution, preselectAccount, preselectCurrency);
+      } else {
+        currencyWrap.style.display = 'none';
       }
+    }
+
+    function populateCurrency(institution, account, preselectCurrency) {
+      const currencies = (ACCOUNTS[institution] && ACCOUNTS[institution][account]) || [];
+      currencyWrap.style.display = 'block';
+      if (currencies.length <= 1) {
+        // Single-currency account: shown for peace of mind, but locked
+        // since there's nothing to actually choose.
+        currencyEl.innerHTML = currencies.length
+          ? '<option value="' + currencies[0] + '">' + currencies[0] + '</option>'
+          : '';
+        currencyEl.disabled = true;
+        updateAmountSymbol();
+        return;
+      }
+      // Multiple possible currencies: show the dropdown, default to last
+      // used for this account if there was one, otherwise the first option.
+      currencyEl.disabled = false;
+      currencyEl.innerHTML = currencies.map(c => '<option value="' + c + '">' + c + '</option>').join('');
+      currencyEl.value = (preselectCurrency && currencies.includes(preselectCurrency))
+        ? preselectCurrency
+        : currencies[0];
+      updateAmountSymbol();
     }
 
     function saveLastUsed() {
       if (!institutionEl.value || !accountEl.value) return;
       localStorage.setItem(LAST_USED_KEY, JSON.stringify({
         institution: institutionEl.value,
-        account: accountEl.value
+        account: accountEl.value,
+        currency: currencyEl.value
       }));
     }
 
     institutionEl.addEventListener('change', () => {
       populateAccounts(institutionEl.value);
     });
-    accountEl.addEventListener('change', saveLastUsed);
+    accountEl.addEventListener('change', () => {
+      populateCurrency(institutionEl.value, accountEl.value);
+      saveLastUsed();
+    });
+    currencyEl.addEventListener('change', () => {
+      updateAmountSymbol();
+      saveLastUsed();
+    });
 
     // Pre-fill from last time, if there was one
     try {
       const last = JSON.parse(localStorage.getItem(LAST_USED_KEY));
       if (last && ACCOUNTS[last.institution]) {
         institutionEl.value = last.institution;
-        populateAccounts(last.institution, last.account);
+        populateAccounts(last.institution, last.account, last.currency);
       }
     } catch (e) { /* ignore, just start blank */ }
 
@@ -250,7 +306,7 @@
       return d.innerHTML;
     }
 
-    function addEntry(amount, note, institution, account) {
+    function addEntry(amount, note, institution, account, currency) {
       const queue = loadQueue();
       queue.push({
         id: Date.now() + '-' + Math.random().toString(36).slice(2),
@@ -258,6 +314,7 @@
         note: note,
         institution: institution,
         account: account,
+        currency: currency,
         timestamp: Date.now(),
         synced: false
       });
@@ -281,6 +338,7 @@
             note: entry.note,
             institution: entry.institution,
             account: entry.account,
+            currency: entry.currency,
             timestamp: entry.timestamp
           })
         }).then((res) => res.json())
@@ -308,7 +366,7 @@
         amountEl.focus();
         return;
       }
-      addEntry(amount, noteEl.value.trim(), institutionEl.value, accountEl.value);
+      addEntry(amount, noteEl.value.trim(), institutionEl.value, accountEl.value, currencyEl.value);
       amountEl.value = '';
       noteEl.value = '';
       showToast('Logged');
