@@ -118,8 +118,17 @@
         <label for="note">Note</label>
         <input id="note" type="text" placeholder="what was it for?" autocomplete="off">
       </div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" id="backfillToggle" style="width:auto;">
+        <label for="backfillToggle" style="font-size:13px;">Backfill a past entry</label>
+      </div>
+      <div id="backfillWrap" style="display:none;">
+        <label for="backfillDate">Date &amp; time</label>
+        <input type="datetime-local" id="backfillDate" style="width:100%;background:#111;border:1px solid #2c2c2c;border-radius:10px;color:#f2f2f2;padding:12px 14px;font-size:15px;">
+      </div>
       <button id="submitBtn">Log it</button>
       <div class="pending" id="pendingText"></div>
+      <button id="undoBtn" style="background:#2c2c2c;display:none;">Undo last entry</button>
     </div>
 
     <div class="recent">
@@ -147,7 +156,7 @@
       },
       'BOC Macau': {
         'UnionPay Diamond Wealth': ['MOP', 'HKD', 'CNY'],
-        'Visa Wealth': ['GBP', 'EUR', 'MOP', 'HKD', 'USD']
+        'Visa Wealth': ['GBP', 'EUR', 'USD']
       }
     };
 
@@ -251,11 +260,25 @@
     const amountEl = document.getElementById('amount');
     const noteEl = document.getElementById('note');
     const submitBtn = document.getElementById('submitBtn');
+    const undoBtn = document.getElementById('undoBtn');
+    const backfillToggle = document.getElementById('backfillToggle');
+    const backfillWrap = document.getElementById('backfillWrap');
+    const backfillDate = document.getElementById('backfillDate');
     const pendingText = document.getElementById('pendingText');
     const recentList = document.getElementById('recentList');
     const statusDot = document.getElementById('statusDot');
     const statusText = document.getElementById('statusText');
     const toast = document.getElementById('toast');
+
+    backfillToggle.addEventListener('change', () => {
+      backfillWrap.style.display = backfillToggle.checked ? 'block' : 'none';
+      if (backfillToggle.checked && !backfillDate.value) {
+        // default to right now, in the format datetime-local expects
+        const now = new Date();
+        now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+        backfillDate.value = now.toISOString().slice(0, 16);
+      }
+    });
 
     function loadQueue() {
       try { return JSON.parse(localStorage.getItem(QUEUE_KEY)) || []; }
@@ -284,15 +307,24 @@
         ? pendingCount + ' waiting to sync'
         : '';
 
+      undoBtn.style.display = queue.length > 0 ? 'block' : 'none';
+
       recentList.innerHTML = '';
       queue.slice(-8).reverse().forEach(entry => {
         const row = document.createElement('div');
         row.className = 'entry';
         const d = new Date(entry.timestamp);
         const time = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+        const details = [entry.institution, entry.account].filter(Boolean).join(' · ');
+        const errorLine = (!entry.synced && entry.lastError)
+          ? '<div style="font-size:11px;color:var(--danger);margin-top:2px;">' + escapeHtml(entry.lastError) + '</div>'
+          : '';
         row.innerHTML =
-          '<div><span class="amt">£' + Number(entry.amount).toFixed(2) + '</span>' +
-          (entry.note ? '<span class="note">' + escapeHtml(entry.note) + '</span>' : '') +
+          '<div>' +
+            '<span class="amt">' + symbolFor(entry.currency) + Number(entry.amount).toFixed(2) + '</span>' +
+            (entry.note ? '<span class="note">' + escapeHtml(entry.note) + '</span>' : '') +
+            (details ? '<div style="font-size:11px;color:var(--muted);margin-top:2px;">' + escapeHtml(details) + '</div>' : '') +
+            errorLine +
           '</div>' +
           '<span class="badge ' + (entry.synced ? 'synced' : 'queued') + '">' +
           (entry.synced ? time : 'queued') + '</span>';
@@ -306,7 +338,7 @@
       return d.innerHTML;
     }
 
-    function addEntry(amount, note, institution, account, currency) {
+    function addEntry(amount, note, institution, account, currency, customTimestamp) {
       const queue = loadQueue();
       queue.push({
         id: Date.now() + '-' + Math.random().toString(36).slice(2),
@@ -315,8 +347,9 @@
         institution: institution,
         account: account,
         currency: currency,
-        timestamp: Date.now(),
-        synced: false
+        timestamp: customTimestamp || Date.now(),
+        synced: false,
+        lastError: null
       });
       saveQueue(queue);
       render();
@@ -334,6 +367,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // keeps this a "simple request", no CORS preflight
           body: JSON.stringify({
+            id: entry.id,
             amount: entry.amount,
             note: entry.note,
             institution: entry.institution,
@@ -343,21 +377,80 @@
           })
         }).then((res) => res.json())
           .then((result) => {
+            const q = loadQueue();
+            const match = q.find(e => e.id === entry.id);
+            if (!match) return;
             if (result && result.status === 'ok') {
-              const q = loadQueue();
-              const match = q.find(e => e.id === entry.id);
-              if (match) match.synced = true;
+              match.synced = true;
+              match.lastError = null;
+            } else {
+              match.lastError = (result && result.message) || 'Sync failed — will retry';
+            }
+            saveQueue(q);
+            render();
+          }).catch((err) => {
+            const q = loadQueue();
+            const match = q.find(e => e.id === entry.id);
+            if (match) {
+              match.lastError = 'No connection — will retry';
               saveQueue(q);
               render();
-            } else {
-              console.error('Sync failed:', result);
-              // stays queued, will retry next time
             }
-          }).catch((err) => {
-            console.error('Sync error:', err);
-            // stays queued, will retry on next online event / page load
           });
       });
+    }
+
+    function deleteRemote(id) {
+      return fetch(SCRIPT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'delete', id: id })
+      }).then((res) => res.json());
+    }
+
+    undoBtn.addEventListener('click', () => {
+      const queue = loadQueue();
+      if (queue.length === 0) return;
+      const last = queue[queue.length - 1];
+      const confirmMsg = 'Undo the last entry — ' + symbolFor(last.currency) +
+        Number(last.amount).toFixed(2) + (last.note ? ' (' + last.note + ')' : '') + '?';
+      if (!confirm(confirmMsg)) return;
+
+      const removeLocally = () => {
+        const q = loadQueue().filter(e => e.id !== last.id);
+        saveQueue(q);
+        render();
+        showToast('Removed');
+      };
+
+      if (!last.synced) {
+        // Never made it to the Sheet — just drop it locally.
+        removeLocally();
+        return;
+      }
+      if (!navigator.onLine) {
+        alert("Can't undo a synced entry while offline — reconnect and try again.");
+        return;
+      }
+      deleteRemote(last.id).then((result) => {
+        if (result && result.status === 'ok') {
+          removeLocally();
+        } else {
+          alert('Could not undo: ' + ((result && result.message) || 'unknown error'));
+        }
+      }).catch(() => alert('Could not undo — check your connection and try again.'));
+    });
+
+    function isDuplicate(amount, institution, account, currency) {
+      const queue = loadQueue();
+      if (queue.length === 0) return false;
+      const last = queue[queue.length - 1];
+      const withinTwoMinutes = (Date.now() - last.timestamp) < 2 * 60 * 1000;
+      return withinTwoMinutes &&
+        Number(last.amount) === amount &&
+        last.institution === institution &&
+        last.account === account &&
+        last.currency === currency;
     }
 
     submitBtn.addEventListener('click', () => {
@@ -366,10 +459,28 @@
         amountEl.focus();
         return;
       }
-      addEntry(amount, noteEl.value.trim(), institutionEl.value, accountEl.value, currencyEl.value);
+
+      const institution = institutionEl.value;
+      const account = accountEl.value;
+      const currency = currencyEl.value;
+
+      if (isDuplicate(amount, institution, account, currency)) {
+        const proceed = confirm(
+          'You just logged ' + symbolFor(currency) + amount.toFixed(2) +
+          ' on this account moments ago. Log it again anyway?'
+        );
+        if (!proceed) return;
+      }
+
+      let customTimestamp = null;
+      if (backfillToggle.checked && backfillDate.value) {
+        customTimestamp = new Date(backfillDate.value).getTime();
+      }
+
+      addEntry(amount, noteEl.value.trim(), institution, account, currency, customTimestamp);
       amountEl.value = '';
       noteEl.value = '';
-      showToast('Logged');
+      showToast(customTimestamp ? 'Logged (backfilled)' : 'Logged');
       amountEl.focus();
     });
 
