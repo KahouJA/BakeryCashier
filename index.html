@@ -94,8 +94,6 @@
         <label for="institution">Institution</label>
         <select id="institution" style="width:100%;background:#111;border:1px solid #2c2c2c;border-radius:10px;color:#f2f2f2;padding:12px 14px;font-size:15px;">
           <option value="">Select institution</option>
-          <option value="Lloyds">Lloyds</option>
-          <option value="BOC Macau">BOC Macau</option>
         </select>
       </div>
       <div>
@@ -114,18 +112,6 @@
       <div>
         <label for="note">Note</label>
         <input id="note" type="text" placeholder="what was it for?" autocomplete="off">
-      </div>
-      <div>
-        <label for="institution">Institution</label>
-        <select id="institution">
-          <option value="">— select —</option>
-        </select>
-      </div>
-      <div>
-        <label for="account">Account</label>
-        <select id="account">
-          <option value="">— select institution first —</option>
-        </select>
       </div>
       <button id="submitBtn">Log it</button>
       <div class="pending" id="pendingText"></div>
@@ -159,6 +145,7 @@
 
     const institutionEl = document.getElementById('institution');
     const accountEl = document.getElementById('account');
+    const LAST_USED_KEY = 'spendlog_last_used_v1';
 
     Object.keys(ACCOUNTS).forEach(inst => {
       const opt = document.createElement('option');
@@ -167,40 +154,42 @@
       institutionEl.appendChild(opt);
     });
 
-    institutionEl.addEventListener('change', () => {
-      const chosen = ACCOUNTS[institutionEl.value] || [];
-      accountEl.innerHTML = '<option value="">— select —</option>';
-      chosen.forEach(acc => {
-        const opt = document.createElement('option');
-        opt.value = acc;
-        opt.textContent = acc;
-        accountEl.appendChild(opt);
-      });
-    });
-
-    // Label-only map (no account numbers here — that lookup lives
-    // server-side in Code.gs, never in this public-facing file).
-    // To add a new account later: add it here AND in Code.gs's
-    // ACCOUNT_NUMBERS map, using the exact same institution/account text.
-    const ACCOUNTS = {
-      'Lloyds': ['Current Account'],
-      'BOC Macau': ['UnionPay Diamond Wealth', 'Visa Wealth']
-    };
-
-    const institutionEl = document.getElementById('institution');
-    const accountEl = document.getElementById('account');
-
-    institutionEl.addEventListener('change', () => {
-      const accounts = ACCOUNTS[institutionEl.value] || [];
-      if (accounts.length === 0) {
+    function populateAccounts(institution, preselectAccount) {
+      const chosen = ACCOUNTS[institution] || [];
+      if (chosen.length === 0) {
         accountEl.innerHTML = '<option value="">Select institution first</option>';
         accountEl.disabled = true;
         return;
       }
       accountEl.disabled = false;
       accountEl.innerHTML = '<option value="">Select account</option>' +
-        accounts.map(a => '<option value="' + a + '">' + a + '</option>').join('');
+        chosen.map(a => '<option value="' + a + '">' + a + '</option>').join('');
+      if (preselectAccount && chosen.includes(preselectAccount)) {
+        accountEl.value = preselectAccount;
+      }
+    }
+
+    function saveLastUsed() {
+      if (!institutionEl.value || !accountEl.value) return;
+      localStorage.setItem(LAST_USED_KEY, JSON.stringify({
+        institution: institutionEl.value,
+        account: accountEl.value
+      }));
+    }
+
+    institutionEl.addEventListener('change', () => {
+      populateAccounts(institutionEl.value);
     });
+    accountEl.addEventListener('change', saveLastUsed);
+
+    // Pre-fill from last time, if there was one
+    try {
+      const last = JSON.parse(localStorage.getItem(LAST_USED_KEY));
+      if (last && ACCOUNTS[last.institution]) {
+        institutionEl.value = last.institution;
+        populateAccounts(last.institution, last.account);
+      }
+    } catch (e) { /* ignore, just start blank */ }
 
     const QUEUE_KEY = 'spendlog_queue_v1';
     const amountEl = document.getElementById('amount');
