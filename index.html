@@ -40,10 +40,11 @@
     label { font-size: 13px; color: var(--muted); }
     .amount-row { display: flex; align-items: center; gap: 6px; }
     .amount-row span { font-size: 28px; color: var(--muted); }
-    input[type="text"], input[inputmode="decimal"] {
+    input[type="text"], input[inputmode="decimal"], select {
       background: #111; border: 1px solid #2c2c2c; border-radius: 10px;
       color: var(--text); padding: 12px 14px; font-size: 17px; width: 100%;
     }
+    select { appearance: none; -webkit-appearance: none; }
     input#amount { font-size: 28px; flex: 1; }
     button {
       background: var(--accent); color: #fff; border: none;
@@ -90,6 +91,20 @@
 
     <div class="card">
       <div>
+        <label for="institution">Institution</label>
+        <select id="institution" style="width:100%;background:#111;border:1px solid #2c2c2c;border-radius:10px;color:#f2f2f2;padding:12px 14px;font-size:15px;">
+          <option value="">Select institution</option>
+          <option value="Lloyds">Lloyds</option>
+          <option value="BOC Macau">BOC Macau</option>
+        </select>
+      </div>
+      <div>
+        <label for="account">Account</label>
+        <select id="account" disabled style="width:100%;background:#111;border:1px solid #2c2c2c;border-radius:10px;color:#f2f2f2;padding:12px 14px;font-size:15px;">
+          <option value="">Select institution first</option>
+        </select>
+      </div>
+      <div>
         <label for="amount">Amount</label>
         <div class="amount-row">
           <span>£</span>
@@ -99,6 +114,18 @@
       <div>
         <label for="note">Note</label>
         <input id="note" type="text" placeholder="what was it for?" autocomplete="off">
+      </div>
+      <div>
+        <label for="institution">Institution</label>
+        <select id="institution">
+          <option value="">— select —</option>
+        </select>
+      </div>
+      <div>
+        <label for="account">Account</label>
+        <select id="account">
+          <option value="">— select institution first —</option>
+        </select>
       </div>
       <button id="submitBtn">Log it</button>
       <div class="pending" id="pendingText"></div>
@@ -114,7 +141,66 @@
 
   <script>
     // Paste your Apps Script Web App URL here (ends in /exec).
-    const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzt0L1DyXvqJW8DZvLVzqr1fnx8vnIuIBD-M90F7QGjMUFL4pTZuH1_XScg3EOvOMud/exec';
+    const SCRIPT_URL = 'PASTE_YOUR_APPS_SCRIPT_URL_HERE';
+
+    // Institution -> list of account labels shown in the dropdown.
+    // No real account numbers live here — this is just labels for
+    // the UI. The actual masked number lookup happens server-side
+    // in Apps Script, so it's never exposed in this public page.
+    //
+    // TO ADD A NEW ACCOUNT LATER: just add a new key (institution name)
+    // or push a new string into an existing institution's array below.
+    // Then add the matching entry in Code.gs's ACCOUNT_NUMBERS table
+    // (see the comment there) so the masked number can be looked up.
+    const ACCOUNTS = {
+      'Lloyds': ['Current Account'],
+      'BOC Macau': ['UnionPay Diamond Wealth', 'Visa Wealth']
+    };
+
+    const institutionEl = document.getElementById('institution');
+    const accountEl = document.getElementById('account');
+
+    Object.keys(ACCOUNTS).forEach(inst => {
+      const opt = document.createElement('option');
+      opt.value = inst;
+      opt.textContent = inst;
+      institutionEl.appendChild(opt);
+    });
+
+    institutionEl.addEventListener('change', () => {
+      const chosen = ACCOUNTS[institutionEl.value] || [];
+      accountEl.innerHTML = '<option value="">— select —</option>';
+      chosen.forEach(acc => {
+        const opt = document.createElement('option');
+        opt.value = acc;
+        opt.textContent = acc;
+        accountEl.appendChild(opt);
+      });
+    });
+
+    // Label-only map (no account numbers here — that lookup lives
+    // server-side in Code.gs, never in this public-facing file).
+    // To add a new account later: add it here AND in Code.gs's
+    // ACCOUNT_NUMBERS map, using the exact same institution/account text.
+    const ACCOUNTS = {
+      'Lloyds': ['Current Account'],
+      'BOC Macau': ['UnionPay Diamond Wealth', 'Visa Wealth']
+    };
+
+    const institutionEl = document.getElementById('institution');
+    const accountEl = document.getElementById('account');
+
+    institutionEl.addEventListener('change', () => {
+      const accounts = ACCOUNTS[institutionEl.value] || [];
+      if (accounts.length === 0) {
+        accountEl.innerHTML = '<option value="">Select institution first</option>';
+        accountEl.disabled = true;
+        return;
+      }
+      accountEl.disabled = false;
+      accountEl.innerHTML = '<option value="">Select account</option>' +
+        accounts.map(a => '<option value="' + a + '">' + a + '</option>').join('');
+    });
 
     const QUEUE_KEY = 'spendlog_queue_v1';
     const amountEl = document.getElementById('amount');
@@ -175,12 +261,14 @@
       return d.innerHTML;
     }
 
-    function addEntry(amount, note) {
+    function addEntry(amount, note, institution, account) {
       const queue = loadQueue();
       queue.push({
         id: Date.now() + '-' + Math.random().toString(36).slice(2),
         amount: amount,
         note: note,
+        institution: institution,
+        account: account,
         timestamp: Date.now(),
         synced: false
       });
@@ -202,6 +290,8 @@
           body: JSON.stringify({
             amount: entry.amount,
             note: entry.note,
+            institution: entry.institution,
+            account: entry.account,
             timestamp: entry.timestamp
           })
         }).then((res) => res.json())
@@ -229,7 +319,7 @@
         amountEl.focus();
         return;
       }
-      addEntry(amount, noteEl.value.trim());
+      addEntry(amount, noteEl.value.trim(), institutionEl.value, accountEl.value);
       amountEl.value = '';
       noteEl.value = '';
       showToast('Logged');
