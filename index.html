@@ -149,8 +149,10 @@
     // One currency = auto-filled silently. More than one = you'll get a
     // Currency dropdown at entry time, since it can't be guessed reliably.
     //
-    // TO ADD A NEW ACCOUNT LATER: add/edit an entry below, then add the
-    // matching institution/account to Code.gs's ACCOUNT_NUMBERS table. (NOW OUTDATED, # IS ADDED NATIVELY)
+    // TO ADD A NEW ACCOUNT LATER: just add/edit an entry below. Code.gs
+    // doesn't validate institution/account names against anything — it
+    // writes whatever's sent here straight into the Sheet, and Account
+    // Number (column I) is left blank for you to fill in there yourself.
     // Adjust the currency lists here to match what each card can actually do.
     const ACCOUNTS = {
       'Lloyds': {
@@ -161,7 +163,7 @@
         'Visa Wealth': ['GBP', 'EUR', 'MOP', 'USD']
       },
       'CCB': {
-        'Long Card All-In-One Account': ['CNY'],
+        'Long Card AllInOne Account': ['CNY'],
         'Alipay': ['CNY'],
         'Wechat Pay': ['CNY']
       }
@@ -363,30 +365,39 @@
       trySync();
     }
 
-    function trySync() {
-      if (!navigator.onLine) return;
-      const queue = loadQueue();
-      const unsynced = queue.filter(e => !e.synced);
-      if (unsynced.length === 0) return;
+    let syncInProgress = false;
 
-      unsynced.forEach(entry => {
-        fetch(SCRIPT_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // keeps this a "simple request", no CORS preflight
-          body: JSON.stringify({
-            id: entry.id,
-            amount: entry.amount,
-            note: entry.note,
-            institution: entry.institution,
-            account: entry.account,
-            currency: entry.currency,
-            timestamp: entry.timestamp
-          })
-        }).then((res) => res.json())
-          .then((result) => {
+    // Entries are sent one at a time, awaiting each response before
+    // starting the next. Firing them all at once (the old behavior) meant
+    // a backlog of offline entries would hit Apps Script as a burst of
+    // simultaneous requests, which raced each other writing to the Sheet.
+    async function trySync() {
+      if (!navigator.onLine || syncInProgress) return;
+      syncInProgress = true;
+      try {
+        // Re-read the queue before each entry, since render()/other code
+        // can mutate it (e.g. an undo) while we're mid-sync.
+        let unsynced = loadQueue().filter(e => !e.synced);
+        for (const entry of unsynced) {
+          if (!navigator.onLine) break;
+          try {
+            const res = await fetch(SCRIPT_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // keeps this a "simple request", no CORS preflight
+              body: JSON.stringify({
+                id: entry.id,
+                amount: entry.amount,
+                note: entry.note,
+                institution: entry.institution,
+                account: entry.account,
+                currency: entry.currency,
+                timestamp: entry.timestamp
+              })
+            });
+            const result = await res.json();
             const q = loadQueue();
             const match = q.find(e => e.id === entry.id);
-            if (!match) return;
+            if (!match) continue;
             if (result && result.status === 'ok') {
               match.synced = true;
               match.lastError = null;
@@ -395,7 +406,7 @@
             }
             saveQueue(q);
             render();
-          }).catch((err) => {
+          } catch (err) {
             const q = loadQueue();
             const match = q.find(e => e.id === entry.id);
             if (match) {
@@ -403,8 +414,11 @@
               saveQueue(q);
               render();
             }
-          });
-      });
+          }
+        }
+      } finally {
+        syncInProgress = false;
+      }
     }
 
     function deleteRemote(id) {
